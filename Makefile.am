@@ -1378,6 +1378,7 @@ MIXER_API_SRC = \
 libmixer_plugins_a_SOURCES = \
 	src/mixer/plugins/NullMixerPlugin.cxx \
 	src/mixer/plugins/SoftwareMixerPlugin.cxx \
+	src/mixer/plugins/SoftwareMixerPlugin.hxx \
 	src/mixer/plugins/volume_mapping.hxx \
 	src/mixer/plugins/volume_mapping.cxx
 
