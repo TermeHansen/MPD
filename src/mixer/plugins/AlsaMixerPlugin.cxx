@@ -36,6 +36,8 @@
 
 #define VOLUME_MIXER_ALSA_DEFAULT		"default"
 #define VOLUME_MIXER_ALSA_CONTROL_DEFAULT	"PCM"
+#define VOLUME_MIXER_ALSA_LOG_DEFAULT	        "linear"
+#define VOLUME_MIXER_ALSA_LOG_PARAM_DEFAULT	"1.0"
 static constexpr unsigned VOLUME_MIXER_ALSA_INDEX_DEFAULT = 0;
 
 class AlsaMixerMonitor final : MultiSocketMonitor, DeferredMonitor {
@@ -65,6 +67,8 @@ class AlsaMixer final : public Mixer {
 	const char *device;
 	const char *control;
 	unsigned int index;
+	const char *scale;
+	double scale_log_param;
 
 	snd_mixer_t *handle;
 	snd_mixer_elem_t *elem;
@@ -172,6 +176,10 @@ AlsaMixer::Configure(const ConfigBlock &block)
 				      VOLUME_MIXER_ALSA_CONTROL_DEFAULT);
 	index = block.GetBlockValue("mixer_index",
 				    VOLUME_MIXER_ALSA_INDEX_DEFAULT);
+	scale = block.GetBlockValue("mixer_scale",
+				    VOLUME_MIXER_ALSA_LOG_DEFAULT);
+	scale_log_param = atof (block.GetBlockValue("mixer_log_param",
+				    VOLUME_MIXER_ALSA_LOG_PARAM_DEFAULT));
 }
 
 static Mixer *
@@ -289,13 +297,29 @@ AlsaMixer::GetVolume()
 		throw FormatRuntimeError("failed to read ALSA volume: %s",
 					 snd_strerror(err));
 
-	ret = ((volume_set / 100.0) * (volume_max - volume_min)
-	       + volume_min) + 0.5;
+
+	if ( strcmp( scale, "log") == 0 ) {
+		ret = scale_log_param*(volume_max-volume_min)*(log(volume_set)/log(100.)-1.)
+			+ volume_max+0.5;
+	}
+	else {
+		ret = ((volume_set / 100.0) * (volume_max - volume_min)
+			+ volume_min) + 0.5;
+	}
+
 	if (volume_set > 0 && ret == level) {
 		ret = volume_set;
-	} else {
-		ret = (int)(100 * (((float)(level - volume_min)) /
-				   (volume_max - volume_min)) + 0.5);
+	}
+	else if (level == 0) {ret=0;}
+	else {
+		if ( strcmp( scale, "log") == 0 ) {
+			ret =  (int)exp(log(100)*(level-volume_max)
+				/(scale_log_param*(volume_max-volume_min))+log(100));
+		}
+		else {
+			ret = (int)(100 * (((float)(level - volume_min))
+				/(volume_max - volume_min)) + 0.5);
+		}
 	}
 
 	return ret;
@@ -313,10 +337,18 @@ AlsaMixer::SetVolume(unsigned volume)
 	vol = volume;
 
 	volume_set = vol + 0.5;
-
-	level = (long)(((vol / 100.0) * (volume_max - volume_min) +
-			volume_min) + 0.5);
-	level = Clamp(level, volume_min, volume_max);
+	if (vol == 0) {level=volume_min;}
+	else {
+		if ( strcmp( scale, "log") == 0 ) {
+			level = (long)(scale_log_param*(volume_max-volume_min))*(log(vol)
+				/log(100.)-1.)+volume_max+0.5;
+		}
+		else {
+			level = (long)(((vol / 100.0) * (volume_max - volume_min)
+				+ volume_min) + 0.5);
+		}
+		level = Clamp(level, volume_min, volume_max);
+	}
 
 	err = snd_mixer_selem_set_playback_volume_all(elem, level);
 	if (err < 0)
