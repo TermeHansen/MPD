@@ -29,6 +29,7 @@
 #include "util/Domain.hxx"
 #include "util/RuntimeError.hxx"
 #include "Log.hxx"
+#include "mixer/plugins/volume_mapping.hxx"
 
 #include <algorithm>
 
@@ -36,8 +37,6 @@
 
 #define VOLUME_MIXER_ALSA_DEFAULT		"default"
 #define VOLUME_MIXER_ALSA_CONTROL_DEFAULT	"PCM"
-#define VOLUME_MIXER_ALSA_LOG_DEFAULT	        "linear"
-#define VOLUME_MIXER_ALSA_LOG_PARAM_DEFAULT	"1.0"
 static constexpr unsigned VOLUME_MIXER_ALSA_INDEX_DEFAULT = 0;
 
 class AlsaMixerMonitor final : MultiSocketMonitor, DeferredMonitor {
@@ -67,14 +66,9 @@ class AlsaMixer final : public Mixer {
 	const char *device;
 	const char *control;
 	unsigned int index;
-	const char *scale;
-	double scale_log_param;
 
 	snd_mixer_t *handle;
 	snd_mixer_elem_t *elem;
-	long volume_min;
-	long volume_max;
-	int volume_set;
 
 	AlsaMixerMonitor *monitor;
 
@@ -176,10 +170,6 @@ AlsaMixer::Configure(const ConfigBlock &block)
 				      VOLUME_MIXER_ALSA_CONTROL_DEFAULT);
 	index = block.GetBlockValue("mixer_index",
 				    VOLUME_MIXER_ALSA_INDEX_DEFAULT);
-	scale = block.GetBlockValue("mixer_scale",
-				    VOLUME_MIXER_ALSA_LOG_DEFAULT);
-	scale_log_param = atof (block.GetBlockValue("mixer_log_param",
-				    VOLUME_MIXER_ALSA_LOG_PARAM_DEFAULT));
 }
 
 static Mixer *
@@ -236,9 +226,6 @@ AlsaMixer::Setup()
 	if (elem == nullptr)
 		throw FormatRuntimeError("no such mixer control: %s", control);
 
-	snd_mixer_selem_get_playback_volume_range(elem, &volume_min,
-						  &volume_max);
-
 	snd_mixer_elem_set_callback_private(elem, this);
 	snd_mixer_elem_set_callback(elem, alsa_mixer_elem_callback);
 
@@ -249,8 +236,6 @@ void
 AlsaMixer::Open()
 {
 	int err;
-
-	volume_set = -1;
 
 	err = snd_mixer_open(&handle, 0);
 	if (err < 0)
@@ -280,8 +265,6 @@ int
 AlsaMixer::GetVolume()
 {
 	int err;
-	int ret;
-	long level;
 
 	assert(handle != nullptr);
 
@@ -290,67 +273,18 @@ AlsaMixer::GetVolume()
 		throw FormatRuntimeError("snd_mixer_handle_events() failed: %s",
 					 snd_strerror(err));
 
-	err = snd_mixer_selem_get_playback_volume(elem,
-						  SND_MIXER_SCHN_FRONT_LEFT,
-						  &level);
-	if (err < 0)
-		throw FormatRuntimeError("failed to read ALSA volume: %s",
-					 snd_strerror(err));
-
-
-	if ( strcmp( scale, "log") == 0 ) {
-		ret = scale_log_param*(volume_max-volume_min)*(log(volume_set)/log(100.)-1.)
-			+ volume_max+0.5;
-	}
-	else {
-		ret = ((volume_set / 100.0) * (volume_max - volume_min)
-			+ volume_min) + 0.5;
-	}
-
-	if (volume_set > 0 && ret == level) {
-		ret = volume_set;
-	}
-	else if (level == 0) {ret=0;}
-	else {
-		if ( strcmp( scale, "log") == 0 ) {
-			ret =  (int)exp(log(100)*(level-volume_max)
-				/(scale_log_param*(volume_max-volume_min))+log(100));
-		}
-		else {
-			ret = (int)(100 * (((float)(level - volume_min))
-				/(volume_max - volume_min)) + 0.5);
-		}
-	}
-
-	return ret;
+	return (int)100*get_normalized_playback_volume(elem, SND_MIXER_SCHN_FRONT_LEFT);
 }
 
 void
 AlsaMixer::SetVolume(unsigned volume)
 {
-	float vol;
-	long level;
 	int err;
 
 	assert(handle != nullptr);
 
-	vol = volume;
+	err = set_normalized_playback_volume(elem, 0.01*volume, 1);
 
-	volume_set = vol + 0.5;
-	if (vol == 0) {level=volume_min;}
-	else {
-		if ( strcmp( scale, "log") == 0 ) {
-			level = (long)(scale_log_param*(volume_max-volume_min))*(log(vol)
-				/log(100.)-1.)+volume_max+0.5;
-		}
-		else {
-			level = (long)(((vol / 100.0) * (volume_max - volume_min)
-				+ volume_min) + 0.5);
-		}
-		level = Clamp(level, volume_min, volume_max);
-	}
-
-	err = snd_mixer_selem_set_playback_volume_all(elem, level);
 	if (err < 0)
 		throw FormatRuntimeError("failed to set ALSA volume: %s",
 					 snd_strerror(err));
